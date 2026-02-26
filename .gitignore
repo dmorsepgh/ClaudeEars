@@ -1,0 +1,12 @@
+# Session output
+notes/
+*.log
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
