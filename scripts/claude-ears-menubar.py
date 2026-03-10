@@ -355,14 +355,14 @@ class ClaudeEarsApp(rumps.App):
         # ── Build and show alert ────────────────────────────────────────────
         alert = NSAlert.alloc().init()
         alert.setMessageText_("Claude Ears — Keywords")
-        alert.addButtonWithTitle_("Set")
+        alert.addButtonWithTitle_("Start Listening")
         alert.addButtonWithTitle_("Cancel")
         alert.setAccessoryView_(view)
         alert.window().setInitialFirstResponder_(text_field)
 
         response = alert.runModal()
 
-        if response == 1000:  # NSAlertFirstButtonReturn — "Set" clicked
+        if response == 1000:  # NSAlertFirstButtonReturn — "Start Listening" clicked
             self._custom_targets = [
                 t.strip().lower() for t in text_field.stringValue().split(",") if t.strip()
             ]
@@ -377,6 +377,7 @@ class ClaudeEarsApp(rumps.App):
                 self._slot_items[i].state   = active
             self._save_config()
             self._rebuild_targets()
+            self.start_listening()
 
     # ── Toggle listen ─────────────────────────────────────────────────────────
     def toggle_listen(self, _):
