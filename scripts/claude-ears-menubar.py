@@ -7,10 +7,12 @@ Listens via BlackHole for one or more words/phrases and shows hits in the menu b
 import rumps
 import threading
 import subprocess
+import queue
 import re
 import sys
 import os
 import time
+import json
 import numpy as np
 import whisper
 from datetime import datetime
@@ -19,6 +21,13 @@ CHUNK_SECS       = 10
 MODEL_SIZE       = "base"
 SAMPLE_RATE      = 16000
 BLACKHOLE_DEVICE = "0"
+
+PRESETS = [
+    "trump",
+    "the president",
+    "the united states",
+    "the us",
+]
 
 def _find_ffmpeg():
     for path in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]:
@@ -32,6 +41,9 @@ def _find_ffmpeg():
 FFMPEG_PATH = _find_ffmpeg()
 NOTES_DIR        = os.path.expanduser("~/ClaudeEars/notes")
 os.makedirs(NOTES_DIR, exist_ok=True)
+
+NUM_CUSTOM_SLOTS = 2
+CONFIG_FILE = os.path.expanduser("~/ClaudeEars/config.json")
 
 PLIST_LABEL = "com.dmpgh.claude-ears"
 PLIST_PATH  = os.path.expanduser(f"~/Library/LaunchAgents/{PLIST_LABEL}.plist")
@@ -52,11 +64,34 @@ class ClaudeEarsApp(rumps.App):
         self._pattern     = None      # compiled regex
         self._session_gen = 0         # incremented each start; kills stale threads
         self._last_chunk_time = None  # watchdog timestamp
+        self._ui_queue    = queue.Queue()  # thread-safe UI update queue
+        self._custom_targets = []     # targets from the manual entry dialog
+        self._qp_slots = self._load_config()  # [{word, active}, ...]
+
+        # Preset submenu
+        self._preset_items = {}
+        preset_menu = rumps.MenuItem("Quick Picks")
+        for p in PRESETS:
+            item = rumps.MenuItem(p.title(), callback=self._toggle_preset)
+            item.state = False
+            self._preset_items[p] = item
+            preset_menu[p.title()] = item
+
+        # Custom slots
+        self._slot_items = []
+        for i in range(NUM_CUSTOM_SLOTS):
+            label = self._slot_label(i)
+            item = rumps.MenuItem(label, callback=self._toggle_slot)
+            item.state = self._qp_slots[i]["active"]
+            self._slot_items.append(item)
+            preset_menu[f"__slot_{i}__"] = item
+        edit_slots_item = rumps.MenuItem("Edit Custom Picks...", callback=self._edit_slots)
+        preset_menu["__edit_slots__"] = edit_slots_item
 
         # Menu items
         self.status_item  = rumps.MenuItem("Not listening")
         self.hits_item    = rumps.MenuItem("Hits: 0")
-        self.set_item     = rumps.MenuItem("Set word/phrase...", callback=self.set_term)
+        self.set_item     = rumps.MenuItem("Set custom word/phrase...", callback=self.set_term)
         self.toggle_item  = rumps.MenuItem("Start Listening", callback=self.toggle_listen)
         self.notes_item   = rumps.MenuItem("Open Notes Folder", callback=self.open_notes)
         self.restart_item = rumps.MenuItem("Restart App", callback=self.restart_app)
@@ -67,6 +102,7 @@ class ClaudeEarsApp(rumps.App):
             self.status_item,
             self.hits_item,
             None,
+            preset_menu,
             self.set_item,
             self.toggle_item,
             None,
@@ -78,6 +114,20 @@ class ClaudeEarsApp(rumps.App):
         ]
 
         self.login_item.state = self._launch_at_login_enabled()
+
+    @rumps.timer(0.3)
+    def _drain_ui(self, _):
+        while not self._ui_queue.empty():
+            try:
+                key, value = self._ui_queue.get_nowait()
+                if key == 'title':
+                    self.title = value
+                elif key == 'status':
+                    self.status_item.title = value
+                elif key == 'hits':
+                    self.hits_item.title = value
+            except queue.Empty:
+                break
 
     @property
     def total_hits(self):
@@ -98,30 +148,138 @@ class ClaudeEarsApp(rumps.App):
         breakdown = "  |  ".join(f"{w}: {self.hit_counts.get(w, 0)}" for w in self.targets)
         return f"Hits: {total}  ({breakdown})"
 
-    # ── Set term ──────────────────────────────────────────────────────────────
-    def set_term(self, _):
+    # ── Preset toggles ────────────────────────────────────────────────────────
+    def _toggle_preset(self, sender):
         if self.listening:
-            rumps.alert("Stop listening first before changing the terms.")
+            rumps.alert("Stop listening first before changing keywords.")
             return
-        current = ", ".join(self.targets) if self.targets else ""
+        key = sender.title.lower()
+        item = self._preset_items.get(key)
+        if item:
+            item.state = not item.state
+        self._rebuild_targets()
+
+    def _rebuild_targets(self):
+        active_presets = [p for p in PRESETS if self._preset_items[p].state]
+        active_slots = [s["word"] for s in self._qp_slots if s["word"] and s["active"]]
+        all_qp = active_presets + [s for s in active_slots if s not in active_presets]
+        self.targets = all_qp + [t for t in self._custom_targets if t not in all_qp]
+        self.hit_counts = {t: 0 for t in self.targets}
+        self._pattern = self._build_pattern()
+        self.chunks = 0
+        self.title = "👂"
+        if self.targets:
+            label = ", ".join(f'"{t}"' for t in self.targets)
+            self.status_item.title = f"Ready: {label}"
+        else:
+            self.status_item.title = "Not listening"
+        self.hits_item.title = "Hits: 0"
+        self.toggle_item.title = "Start Listening"
+
+    # ── Custom slots ──────────────────────────────────────────────────────────
+    def _slot_label(self, idx):
+        word = self._qp_slots[idx]["word"]
+        return word.title() if word else f"Set Custom {idx + 1}..."
+
+    def _load_config(self):
+        try:
+            with open(CONFIG_FILE) as f:
+                data = json.load(f)
+            slots = data.get("slots", [])
+            result = []
+            for i in range(NUM_CUSTOM_SLOTS):
+                s = slots[i] if i < len(slots) else {}
+                result.append({"word": s.get("word", ""), "active": s.get("active", False)})
+            return result
+        except Exception:
+            return [{"word": "", "active": False} for _ in range(NUM_CUSTOM_SLOTS)]
+
+    def _save_config(self):
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump({"slots": self._qp_slots}, f, indent=2)
+
+    def _toggle_slot(self, sender):
+        idx = next((i for i, item in enumerate(self._slot_items) if item is sender), None)
+        if idx is None:
+            return
+        slot = self._qp_slots[idx]
+        if not slot["word"]:
+            self._prompt_slot(idx)
+        else:
+            if self.listening:
+                rumps.alert("Stop listening first before changing keywords.")
+                return
+            slot["active"] = not slot["active"]
+            self._slot_items[idx].state = slot["active"]
+            self._save_config()
+            self._rebuild_targets()
+
+    def _prompt_slot(self, idx):
+        if self.listening:
+            rumps.alert("Stop listening first before changing keywords.")
+            return
+        current = self._qp_slots[idx]["word"]
         response = rumps.Window(
             title="Claude Ears",
-            message="Enter words or phrases to listen for (comma-separated):",
+            message=f"Enter word or phrase for Custom Slot {idx + 1}:",
             default_text=current,
             ok="Set",
             cancel="Cancel",
             dimensions=(320, 24)
         ).run()
-        if response.clicked and response.text.strip():
-            self.targets = [t.strip().lower() for t in response.text.split(",") if t.strip()]
-            self.hit_counts = {t: 0 for t in self.targets}
-            self._pattern = self._build_pattern()
-            self.chunks = 0
-            self.title = "👂"
-            label = ", ".join(f'"{t}"' for t in self.targets)
-            self.status_item.title = f"Listening for: {label}"
-            self.hits_item.title = "Hits: 0"
-            self.toggle_item.title = "Start Listening"
+        if response.clicked:
+            word = response.text.strip().lower()
+            self._qp_slots[idx]["word"] = word
+            self._qp_slots[idx]["active"] = bool(word)
+            self._slot_items[idx].title = self._slot_label(idx)
+            self._slot_items[idx].state = bool(word)
+            self._save_config()
+            self._rebuild_targets()
+
+    def _edit_slots(self, _):
+        if self.listening:
+            rumps.alert("Stop listening first before changing keywords.")
+            return
+        current = ", ".join(s["word"] for s in self._qp_slots if s["word"])
+        response = rumps.Window(
+            title="Claude Ears — Edit Custom Picks",
+            message="Enter up to 2 custom words/phrases (comma-separated). Clear to remove.",
+            default_text=current,
+            ok="Save",
+            cancel="Cancel",
+            dimensions=(320, 24)
+        ).run()
+        if response.clicked:
+            words = [t.strip().lower() for t in response.text.split(",") if t.strip()][:NUM_CUSTOM_SLOTS]
+            while len(words) < NUM_CUSTOM_SLOTS:
+                words.append("")
+            for i in range(NUM_CUSTOM_SLOTS):
+                self._qp_slots[i]["word"] = words[i]
+                if not words[i]:
+                    self._qp_slots[i]["active"] = False
+                self._slot_items[i].title = self._slot_label(i)
+                self._slot_items[i].state = self._qp_slots[i]["active"]
+            self._save_config()
+            self._rebuild_targets()
+
+    # ── Set term ──────────────────────────────────────────────────────────────
+    def set_term(self, _):
+        if self.listening:
+            rumps.alert("Stop listening first before changing the terms.")
+            return
+        current = ", ".join(self._custom_targets) if self._custom_targets else ""
+        response = rumps.Window(
+            title="Claude Ears",
+            message="Enter custom words or phrases (comma-separated):",
+            default_text=current,
+            ok="Set",
+            cancel="Cancel",
+            dimensions=(320, 24)
+        ).run()
+        if response.clicked:
+            self._custom_targets = [t.strip().lower() for t in response.text.split(",") if t.strip()]
+            self._rebuild_targets()
 
     # ── Toggle listen ─────────────────────────────────────────────────────────
     def toggle_listen(self, _):
@@ -185,7 +343,7 @@ class ClaudeEarsApp(rumps.App):
                 break
             elapsed = time.time() - (self._last_chunk_time or time.time())
             if elapsed > TIMEOUT:
-                self.status_item.title = "⚠️ Restarting..."
+                self._ui_queue.put(('status', "⚠️ Restarting..."))
                 self._session_gen += 1
                 gen = self._session_gen
                 self._last_chunk_time = time.time()
@@ -196,11 +354,11 @@ class ClaudeEarsApp(rumps.App):
     # ── Listen loop (background thread) ──────────────────────────────────────
     def listen_loop(self, gen):
         if self.model is None:
-            self.status_item.title = "Loading Whisper..."
+            self._ui_queue.put(('status', "Loading Whisper..."))
             self.model = whisper.load_model(MODEL_SIZE)
 
         label = ", ".join(f'"{t}"' for t in self.targets)
-        self.status_item.title = f"👂 Listening for: {label}"
+        self._ui_queue.put(('status', f"👂 Listening for: {label}"))
 
         while self.listening and gen == self._session_gen:
             try:
@@ -225,8 +383,8 @@ class ClaudeEarsApp(rumps.App):
                         key = word.lower()
                         self.hit_counts[key] = self.hit_counts.get(key, 0) + 1
 
-                    self.title = f"🎯 {self.total_hits}"
-                    self.hits_item.title = self._hits_display()
+                    self._ui_queue.put(('title', f"🎯 {self.total_hits}"))
+                    self._ui_queue.put(('hits', self._hits_display()))
 
                     subprocess.Popen(
                         ["afplay", "/System/Library/Sounds/Ping.aiff"],
