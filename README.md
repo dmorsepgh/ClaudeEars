@@ -1,46 +1,67 @@
 # Claude Ears 👂
 
-**Always listening. Always taking notes.**
+**Keyword tracking for your system audio.**
 
-Claude Ears taps into BlackHole (virtual audio) to capture whatever's playing on your Mac — meetings, tutorials, videos, calls — and uses Whisper + Claude AI to transcribe and take intelligent notes in real time.
+Claude Ears sits in your macOS menu bar and listens to whatever's playing on your Mac — TV, podcasts, meetings, videos — and counts every time your target words are mentioned. Timestamps, full transcript context, session logs.
 
 ## How It Works
 
-1. Mac audio routes through **BlackHole 2ch** (same setup as Trump Bingo)
-2. **Whisper** (tiny/base model) transcribes 10-second audio chunks
-3. **Claude API** analyzes each chunk in context and builds running notes
-4. Notes saved as markdown in `~/ClaudeEars/notes/`
+1. Mac audio routes through **BlackHole 2ch** (virtual audio driver)
+2. **ffmpeg** captures the audio stream in 10-second chunks
+3. **Whisper** (runs locally — no internet required) transcribes each chunk
+4. The app scans the transcript for your keywords and logs every hit
 
-## Modes
+## Features
 
-- **Meeting Mode** — captures decisions, action items, key quotes
-- **Learning Mode** — study notes, key concepts, summaries
+- Track one or multiple keywords simultaneously (comma-separated)
+- Live hit count in the menu bar
+- Audio ping on every hit
+- Session notes saved as markdown with timestamps and transcript context
+- Watchdog auto-restarts if the listener goes dormant
+- Launch at Login support
+- Restart from menu bar without opening Terminal
+
+## Requirements
+
+- macOS
+- [BlackHole 2ch](https://existential.audio/blackhole/) — virtual audio driver
+- Multi-Output Device configured in Audio MIDI Setup (routes audio to both BlackHole and your speakers)
+- ffmpeg — `brew install ffmpeg`
+- Python 3.11+ with dependencies:
+
+```bash
+pip install openai-whisper rumps numpy
+```
+
+## Quick Start
+
+```bash
+python3 scripts/claude-ears-menubar.py
+```
+
+The 👂 icon appears in your menu bar. Click it to set keywords and start listening.
 
 ## Files
 
 ```
 ClaudeEars/
 ├── scripts/
-│   ├── claude-ears.py          # Main listener script
-│   └── Start-ClaudeEars.command  # Double-click launcher
-├── notes/                      # Auto-generated markdown notes
-└── docs/
-    └── setup.md               # BlackHole setup guide
+│   ├── claude-ears-menubar.py    # Menu bar app (main)
+│   └── claude-ears.py            # Original CLI version
+├── notes/                        # Session logs (auto-generated)
+├── docs/
+│   ├── setup.md                  # BlackHole setup guide
+│   └── vision-script.md          # Explainer script
+└── setup.py                      # py2app build config
 ```
 
-## Quick Start
+## Whisper Models
 
-```bash
-# Listen to system audio (via BlackHole)
-python3 scripts/claude-ears.py --mode meeting
+The app uses the `base` model by default. To change it, edit `MODEL_SIZE` at the top of the script:
 
-# Learning/video mode
-python3 scripts/claude-ears.py --mode learning
-```
-
-## Requirements
-
-- BlackHole 2ch installed
-- Multi-Output Device configured in Audio MIDI Setup
-- `pip install openai-whisper anthropic numpy`
-- ffmpeg installed
+| Model | Accuracy | Speed |
+|-------|----------|-------|
+| `tiny` | Low | Fastest |
+| `base` | Good | Fast (default) |
+| `small` | Better | Moderate |
+| `medium` | Best | Slower |
