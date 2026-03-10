@@ -95,7 +95,7 @@ class ClaudeEarsApp(rumps.App):
         # Menu items
         self.status_item  = rumps.MenuItem("Not listening")
         self.hits_item    = rumps.MenuItem("Hits: 0")
-        self.set_item     = rumps.MenuItem("Set custom word/phrase...", callback=self.set_term)
+        self.set_item     = rumps.MenuItem("Set Keywords...", callback=self.set_term)
         self.toggle_item  = rumps.MenuItem("Start Listening", callback=self.toggle_listen)
         self.notes_item   = rumps.MenuItem("Open Notes Folder", callback=self.open_notes)
         self.restart_item = rumps.MenuItem("Restart App", callback=self.restart_app)
@@ -270,19 +270,112 @@ class ClaudeEarsApp(rumps.App):
     # ── Set term ──────────────────────────────────────────────────────────────
     def set_term(self, _):
         if self.listening:
-            rumps.alert("Stop listening first before changing the terms.")
+            rumps.alert("Stop listening first before changing keywords.")
             return
-        current = ", ".join(self._custom_targets) if self._custom_targets else ""
-        response = rumps.Window(
-            title="Claude Ears",
-            message="Enter custom words or phrases (comma-separated):",
-            default_text=current,
-            ok="Set",
-            cancel="Cancel",
-            dimensions=(320, 24)
-        ).run()
-        if response.clicked:
-            self._custom_targets = [t.strip().lower() for t in response.text.split(",") if t.strip()]
+        self._show_keyword_dialog()
+
+    def _show_keyword_dialog(self):
+        from AppKit import NSAlert, NSView, NSButton, NSTextField, NSFont
+
+        ROW_H = 22
+        W     = 360
+        PAD   = 8
+
+        slot_section   = NUM_CUSTOM_SLOTS * (ROW_H + 4) + 4 + 18 + PAD
+        preset_section = len(PRESETS) * ROW_H + 4 + 18 + PAD
+        input_section  = 18 + 4 + ROW_H + 4
+        total_h = PAD + slot_section + preset_section + input_section + PAD
+
+        view = NSView.alloc().initWithFrame_(((0, 0), (W, total_h)))
+        y = PAD
+
+        # ── Custom slots (bottom) ───────────────────────────────────────────
+        slot_checks, slot_fields = [], []
+        for i in range(NUM_CUSTOM_SLOTS - 1, -1, -1):
+            tf = NSTextField.alloc().initWithFrame_(((28, y), (W - 28, ROW_H)))
+            tf.setStringValue_(self._qp_slots[i]["word"])
+            tf.setPlaceholderString_(f"Custom {i + 1}...")
+            view.addSubview_(tf)
+
+            cb = NSButton.alloc().initWithFrame_(((0, y + 2), (24, ROW_H)))
+            cb.setButtonType_(3)   # NSButtonTypeSwitch (checkbox)
+            cb.setTitle_("")
+            cb.setState_(1 if (self._qp_slots[i]["active"] and self._qp_slots[i]["word"]) else 0)
+            view.addSubview_(cb)
+
+            slot_checks.insert(0, cb)
+            slot_fields.insert(0, tf)
+            y += ROW_H + 4
+
+        # "Custom:" label
+        y += 4
+        lbl = NSTextField.alloc().initWithFrame_(((0, y), (W, 18)))
+        lbl.setStringValue_("Custom:")
+        lbl.setBezeled_(False); lbl.setDrawsBackground_(False)
+        lbl.setEditable_(False); lbl.setSelectable_(False)
+        lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
+        view.addSubview_(lbl)
+        y += 18 + PAD
+
+        # ── Preset checkboxes ───────────────────────────────────────────────
+        preset_checks = {}
+        for p in reversed(PRESETS):
+            cb = NSButton.alloc().initWithFrame_(((0, y), (W, ROW_H)))
+            cb.setButtonType_(3)
+            cb.setTitle_(p.title())
+            cb.setState_(1 if self._preset_items[p].state else 0)
+            view.addSubview_(cb)
+            preset_checks[p] = cb
+            y += ROW_H
+
+        # "Quick Picks:" label
+        y += 4
+        lbl2 = NSTextField.alloc().initWithFrame_(((0, y), (W, 18)))
+        lbl2.setStringValue_("Quick Picks:")
+        lbl2.setBezeled_(False); lbl2.setDrawsBackground_(False)
+        lbl2.setEditable_(False); lbl2.setSelectable_(False)
+        lbl2.setFont_(NSFont.boldSystemFontOfSize_(12))
+        view.addSubview_(lbl2)
+        y += 18 + PAD
+
+        # ── Free-text entry (top) ───────────────────────────────────────────
+        lbl3 = NSTextField.alloc().initWithFrame_(((0, y), (W, 18)))
+        lbl3.setStringValue_("Type your own word or phrase (comma-separated):")
+        lbl3.setBezeled_(False); lbl3.setDrawsBackground_(False)
+        lbl3.setEditable_(False); lbl3.setSelectable_(False)
+        lbl3.setFont_(NSFont.systemFontOfSize_(12))
+        view.addSubview_(lbl3)
+        y += 18 + 4
+
+        text_field = NSTextField.alloc().initWithFrame_(((0, y), (W, ROW_H)))
+        text_field.setStringValue_(", ".join(self._custom_targets))
+        text_field.setPlaceholderString_("e.g. climate change, economy")
+        view.addSubview_(text_field)
+
+        # ── Build and show alert ────────────────────────────────────────────
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Claude Ears — Keywords")
+        alert.addButtonWithTitle_("Set")
+        alert.addButtonWithTitle_("Cancel")
+        alert.setAccessoryView_(view)
+        alert.window().setInitialFirstResponder_(text_field)
+
+        response = alert.runModal()
+
+        if response == 1000:  # NSAlertFirstButtonReturn — "Set" clicked
+            self._custom_targets = [
+                t.strip().lower() for t in text_field.stringValue().split(",") if t.strip()
+            ]
+            for p, cb in preset_checks.items():
+                self._preset_items[p].state = bool(cb.state())
+            for i in range(NUM_CUSTOM_SLOTS):
+                word   = slot_fields[i].stringValue().strip().lower()
+                active = bool(slot_checks[i].state()) and bool(word)
+                self._qp_slots[i]["word"]   = word
+                self._qp_slots[i]["active"] = active
+                self._slot_items[i].title   = self._slot_label(i)
+                self._slot_items[i].state   = active
+            self._save_config()
             self._rebuild_targets()
 
     # ── Toggle listen ─────────────────────────────────────────────────────────
