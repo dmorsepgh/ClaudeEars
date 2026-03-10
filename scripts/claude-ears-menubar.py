@@ -27,6 +27,10 @@ PRESETS = [
     "the president",
     "the united states",
     "the us",
+    "conservative",
+    "liberal",
+    "republican",
+    "democrat",
 ]
 
 def _find_ffmpeg():
