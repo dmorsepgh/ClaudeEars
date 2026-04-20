@@ -434,7 +434,7 @@ class ClaudeEarsApp(rumps.App):
             f.write(f"# Claude Ears Session\n")
             f.write(f"**Listening for:** {label}\n")
             f.write(f"**Started:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            f.write(f"---\n\n## Transcript\n\n")
+            f.write(f"---\n\n## Hits\n\n")
 
         self._last_chunk_time = time.time()
         gen = self._session_gen
@@ -496,14 +496,13 @@ class ClaudeEarsApp(rumps.App):
                 result = self.model.transcribe(audio, language="en", fp16=False)
                 text   = result["text"].strip()
 
-                ts = datetime.now().strftime("%H:%M:%S")
-
                 if not text or not self._pattern:
                     continue
 
                 matches = self._pattern.findall(text)
 
                 if matches:
+                    ts = datetime.now().strftime("%H:%M:%S")
                     for word in matches:
                         key = word.lower()
                         self.hit_counts[key] = self.hit_counts.get(key, 0) + 1
@@ -517,11 +516,10 @@ class ClaudeEarsApp(rumps.App):
                     )
 
                     highlighted = self._pattern.sub(lambda m: f"**{m.group()}**", text)
+                    hit_words = ", ".join(f'"{w}"' for w in set(m.lower() for m in matches))
                     with open(self.session_file, "a") as f:
-                        f.write(f"🎯 `{ts}` {highlighted}\n\n")
-                else:
-                    with open(self.session_file, "a") as f:
-                        f.write(f"`{ts}` {text}\n\n")
+                        f.write(f"🎯 **[{ts}]** — {hit_words}\n")
+                        f.write(f"> {highlighted}\n\n")
 
             except Exception as e:
                 print(f"Error: {e}")
