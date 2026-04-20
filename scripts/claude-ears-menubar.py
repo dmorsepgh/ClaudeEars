@@ -96,10 +96,12 @@ class ClaudeEarsApp(rumps.App):
         preset_menu["__edit_slots__"] = edit_slots_item
 
         # Menu items
+        self._transcribe_all = False
         self.status_item  = rumps.MenuItem("Not listening")
         self.hits_item    = rumps.MenuItem("Hits: 0")
         self.set_item     = rumps.MenuItem("Set Keywords...", callback=self.set_term)
         self.toggle_item  = rumps.MenuItem("Start Listening", callback=self.toggle_listen)
+        self.mode_item    = rumps.MenuItem("Transcribe All", callback=self.toggle_transcribe_mode)
         self.notes_item   = rumps.MenuItem("Open Notes Folder", callback=self.open_notes)
         self.restart_item = rumps.MenuItem("Restart App", callback=self.restart_app)
         self.login_item   = rumps.MenuItem("Launch at Login", callback=self.toggle_launch_at_login)
@@ -112,6 +114,7 @@ class ClaudeEarsApp(rumps.App):
             preset_menu,
             self.set_item,
             self.toggle_item,
+            self.mode_item,
             None,
             self.notes_item,
             self.restart_item,
@@ -501,8 +504,9 @@ class ClaudeEarsApp(rumps.App):
 
                 matches = self._pattern.findall(text)
 
+                ts = datetime.now().strftime("%H:%M:%S")
+
                 if matches:
-                    ts = datetime.now().strftime("%H:%M:%S")
                     for word in matches:
                         key = word.lower()
                         self.hit_counts[key] = self.hit_counts.get(key, 0) + 1
@@ -520,6 +524,10 @@ class ClaudeEarsApp(rumps.App):
                     with open(self.session_file, "a") as f:
                         f.write(f"🎯 **[{ts}]** — {hit_words}\n")
                         f.write(f"> {highlighted}\n\n")
+
+                elif self._transcribe_all:
+                    with open(self.session_file, "a") as f:
+                        f.write(f"`{ts}` {text}\n\n")
 
             except Exception as e:
                 print(f"Error: {e}")
@@ -579,6 +587,11 @@ class ClaudeEarsApp(rumps.App):
             self.login_item.state = True
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+    def toggle_transcribe_mode(self, _):
+        self._transcribe_all = not self._transcribe_all
+        self.mode_item.state = self._transcribe_all
+        self.mode_item.title = "Transcribe All"
+
     def open_notes(self, _):
         subprocess.run(["open", NOTES_DIR])
 
