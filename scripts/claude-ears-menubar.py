@@ -20,7 +20,7 @@ from datetime import datetime
 CHUNK_SECS       = 10
 MODEL_SIZE       = "base"
 SAMPLE_RATE      = 16000
-BLACKHOLE_DEVICE = "0"
+BLACKHOLE_DEVICE = "1"
 
 PRESETS = [
     "trump",
@@ -75,6 +75,9 @@ class ClaudeEarsApp(rumps.App):
         # Preset submenu
         self._preset_items = {}
         preset_menu = rumps.MenuItem("Quick Picks")
+        select_all_item = rumps.MenuItem("✓ Select All", callback=self._toggle_select_all)
+        preset_menu["__select_all__"] = select_all_item
+        self._select_all_item = select_all_item
         for p in PRESETS:
             item = rumps.MenuItem(p.title(), callback=self._toggle_preset)
             item.state = False
@@ -153,6 +156,17 @@ class ClaudeEarsApp(rumps.App):
         return f"Hits: {total}  ({breakdown})"
 
     # ── Preset toggles ────────────────────────────────────────────────────────
+    def _toggle_select_all(self, _):
+        if self.listening:
+            rumps.alert("Stop listening first before changing keywords.")
+            return
+        all_on = all(self._preset_items[p].state for p in PRESETS)
+        new_state = not all_on
+        for p in PRESETS:
+            self._preset_items[p].state = new_state
+        self._select_all_item.title = "✓ Select All" if new_state else "○ Select All"
+        self._rebuild_targets()
+
     def _toggle_preset(self, sender):
         if self.listening:
             rumps.alert("Stop listening first before changing keywords.")
@@ -328,8 +342,16 @@ class ClaudeEarsApp(rumps.App):
             preset_checks[p] = cb
             y += ROW_H
 
+        # "Select All" checkbox
+        select_all_cb = NSButton.alloc().initWithFrame_(((0, y), (W, ROW_H)))
+        select_all_cb.setButtonType_(3)
+        select_all_cb.setTitle_("Select All")
+        all_on = all(self._preset_items[p].state for p in PRESETS)
+        select_all_cb.setState_(1 if all_on else 0)
+        view.addSubview_(select_all_cb)
+        y += ROW_H + 4
+
         # "Quick Picks:" label
-        y += 4
         lbl2 = NSTextField.alloc().initWithFrame_(((0, y), (W, 18)))
         lbl2.setStringValue_("Quick Picks:")
         lbl2.setBezeled_(False); lbl2.setDrawsBackground_(False)
@@ -366,8 +388,12 @@ class ClaudeEarsApp(rumps.App):
             self._custom_targets = [
                 t.strip().lower() for t in text_field.stringValue().split(",") if t.strip()
             ]
-            for p, cb in preset_checks.items():
-                self._preset_items[p].state = bool(cb.state())
+            if select_all_cb.state():
+                for p in PRESETS:
+                    self._preset_items[p].state = True
+            else:
+                for p, cb in preset_checks.items():
+                    self._preset_items[p].state = bool(cb.state())
             for i in range(NUM_CUSTOM_SLOTS):
                 word   = slot_fields[i].stringValue().strip().lower()
                 active = bool(slot_checks[i].state()) and bool(word)
@@ -514,7 +540,9 @@ class ClaudeEarsApp(rumps.App):
             result = subprocess.run(cmd, capture_output=True, timeout=CHUNK_SECS + 15)
             if not result.stdout:
                 return None
-            return np.frombuffer(result.stdout, dtype=np.float32)
+            raw = result.stdout
+            raw = raw[:len(raw) - (len(raw) % 4)]
+            return np.frombuffer(raw, dtype=np.float32)
         except Exception:
             return None
 
