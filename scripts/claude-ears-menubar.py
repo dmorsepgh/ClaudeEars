@@ -14,7 +14,7 @@ import os
 import time
 import json
 import numpy as np
-import whisper
+from faster_whisper import WhisperModel
 from datetime import datetime
 
 CHUNK_SECS       = 10
@@ -482,7 +482,7 @@ class ClaudeEarsApp(rumps.App):
     def listen_loop(self, gen):
         if self.model is None:
             self._ui_queue.put(('status', "Loading Whisper..."))
-            self.model = whisper.load_model(MODEL_SIZE)
+            self.model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
 
         label = ", ".join(f'"{t}"' for t in self.targets)
         self._ui_queue.put(('status', f"👂 Listening for: {label}"))
@@ -496,8 +496,8 @@ class ClaudeEarsApp(rumps.App):
                     time.sleep(2)
                     continue
 
-                result = self.model.transcribe(audio, language="en", fp16=False)
-                text   = result["text"].strip()
+                segments, _ = self.model.transcribe(audio, language="en")
+                text = " ".join(s.text for s in segments).strip()
 
                 if not text or not self._pattern:
                     continue
