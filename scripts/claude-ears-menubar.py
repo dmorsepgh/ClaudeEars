@@ -18,7 +18,7 @@ from faster_whisper import WhisperModel
 from datetime import datetime
 
 CHUNK_SECS       = 10
-MODEL_SIZE       = "base"
+MODEL_SIZE       = "large-v3"
 SAMPLE_RATE      = 16000
 BLACKHOLE_DEVICE = "1"
 
@@ -496,7 +496,7 @@ class ClaudeEarsApp(rumps.App):
                     time.sleep(2)
                     continue
 
-                segments, _ = self.model.transcribe(audio, language="en")
+                segments, _ = self.model.transcribe(audio, language="en", vad_filter=True)
                 text = " ".join(s.text for s in segments).strip()
 
                 if not text or not self._pattern:
